@@ -185,8 +185,8 @@ func assertSampleTypes(t *testing.T, recorder *detectorMetricsRecorder, want ...
 	assert.Equal(t, want, gotTypes)
 }
 
-func getResultCacheKey(t *testing.T, cache *VerificationCache, result detectors.Result) string {
-	key, err := cache.getResultCacheKey(result)
+func getResultCacheKey(t *testing.T, cache *VerificationCache, detector detectors.Detector, result detectors.Result) string {
+	key, err := cache.getResultCacheKey(detector, result)
 	require.NoError(t, err)
 	return string(key)
 }
@@ -285,8 +285,8 @@ func TestVerificationCache_FromData_VerifyTrueForceCacheUpdateFalseAllCacheHits(
 	cacheData[0].SetVerificationError(errors.New("test verification error"))
 	metrics := InMemoryMetrics{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, remoteResults[0]), cacheData[0])
-	cache.resultCache.Set(getResultCacheKey(t, cache, remoteResults[1]), cacheData[1])
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, remoteResults[0]), cacheData[0])
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, remoteResults[1]), cacheData[1])
 
 	results, err := cache.FromData(
 		logContext.Background(),
@@ -322,7 +322,7 @@ func TestVerificationCache_FromData_VerifyTrueForceCacheUpdateFalseCacheMiss(t *
 	resultCache := simple.NewCache[detectors.Result]()
 	metrics := InMemoryMetrics{}
 	cache := New(resultCache, &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]), cachedResult)
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]), cachedResult)
 
 	results, err := cache.FromData(
 		logContext.Background(),
@@ -355,8 +355,8 @@ func TestVerificationCache_FromData_VerifyTrueForceCacheUpdateTrue(t *testing.T)
 	detector.results[1].SetVerificationError(errors.New("test verification error"))
 	metrics := InMemoryMetrics{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]), detectors.Result{Redacted: "hello", Verified: false})
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[1]), detectors.Result{Redacted: "world", Verified: true})
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]), detectors.Result{Redacted: "hello", Verified: false})
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[1]), detectors.Result{Redacted: "world", Verified: true})
 
 	results, err := cache.FromData(
 		logContext.Background(),
@@ -433,7 +433,7 @@ func TestVerificationCache_FromData_ResultVerifier_PartialCacheHit(t *testing.T)
 	detector.results[1].SetVerificationError(errors.New("test verification error"))
 	metrics := InMemoryMetrics{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
 
 	results, err := cache.FromData(
@@ -481,8 +481,8 @@ func TestVerificationCache_FromData_ResultVerifier_AllCacheHits(t *testing.T) {
 		{Redacted: "world", Verified: false},
 	}
 	cacheData[1].SetVerificationError(errors.New("test verification error"))
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]), cacheData[0])
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[1]), cacheData[1])
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]), cacheData[0])
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[1]), cacheData[1])
 
 	results, err := cache.FromData(
 		logContext.Background(),
@@ -620,7 +620,7 @@ func TestVerificationCache_FromData_ResultVerifier_ForceCacheUpdate(t *testing.T
 	}}}
 	metrics := InMemoryMetrics{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: false})
 
 	results, err := cache.FromData(
@@ -712,7 +712,7 @@ func TestVerificationCache_FromData_PerDetectorTiming_CacheMiss(t *testing.T) {
 	}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, false, nil)
@@ -732,9 +732,9 @@ func TestVerificationCache_FromData_PerDetectorTiming_AllCacheHits(t *testing.T)
 	}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[1]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[1]),
 		detectors.Result{Redacted: "world", Verified: false})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, false, nil)
@@ -750,7 +750,7 @@ func TestVerificationCache_FromData_PerDetectorTiming_ForceCacheUpdate(t *testin
 	}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: false})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, true, nil)
@@ -767,7 +767,7 @@ func TestVerificationCache_FromData_PerDetectorTiming_ResultVerifierPartialCache
 	}}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, false, nil)
@@ -785,9 +785,9 @@ func TestVerificationCache_FromData_PerDetectorTiming_ResultVerifierAllCacheHits
 	}}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[1]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[1]),
 		detectors.Result{Redacted: "world", Verified: false})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, false, nil)

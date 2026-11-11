@@ -3,6 +3,8 @@ package custom_detectors
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"strings"
 
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/trufflesecurity/trufflehog/v3/pkg/common"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors"
@@ -45,6 +48,47 @@ type CustomRegexWebhook struct {
 var _ detectors.Detector = (*CustomRegexWebhook)(nil)
 var _ detectors.CustomFalsePositiveChecker = (*CustomRegexWebhook)(nil)
 var _ detectors.MaxSecretSizeProvider = (*CustomRegexWebhook)(nil)
+var _ detectors.CacheKeyer = (*CustomRegexWebhook)(nil)
+
+// CacheKey returns the detector-specific component of the verification cache
+// key. It combines the detector's stable identity (its configured name) with
+// a deterministic encoding of its full verification configuration, so that:
+//
+//   - distinct custom detectors never share a cache entry even though they all
+//     report DetectorType_CustomRegex,
+//   - repeated runs of the same detector still hit the cache for identical
+//     secrets, and
+//   - any change to a verifier (endpoint, headers, status ranges, auth, ...)
+//     produces a different key and therefore a cache miss.
+//
+// Only verification-relevant configuration is included; detection regexes and
+// keywords do not affect what a remote verifier decides. The assembled
+// configuration may contain credentials (for example, a static verifier
+// header or auth configuration), so the method returns only a one-way digest.
+// Cached results also have their secret fields cleared before storage.
+func (c *CustomRegexWebhook) CacheKey() ([]byte, error) {
+	key := bytes.NewBuffer(nil)
+
+	name := c.GetName()
+	var nameLen [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(nameLen[:], uint64(len(name)))
+	key.Write(nameLen[:n])
+	key.WriteString(name)
+
+	for _, verifyConfig := range c.GetVerify() {
+		marshaled, err := proto.Marshal(verifyConfig)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling verifier config for cache key: %w", err)
+		}
+		var configLen [binary.MaxVarintLen64]byte
+		n := binary.PutUvarint(configLen[:], uint64(len(marshaled)))
+		key.Write(configLen[:n])
+		key.Write(marshaled)
+	}
+
+	sum := sha256.Sum256(key.Bytes())
+	return sum[:], nil
+}
 
 // NewWebhookCustomRegex initializes and validates a CustomRegexWebhook. An
 // unexported type is intentionally returned here to ensure the values have

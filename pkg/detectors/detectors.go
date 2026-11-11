@@ -106,6 +106,19 @@ type CloudProvider interface {
 	CloudEndpoint() string
 }
 
+// CacheKeyer is an optional interface a detector can implement to contribute a
+// stable, detector-specific component to the verification cache key.
+//
+// The returned bytes must deterministically identify both the detector
+// instance (so distinct detectors that share a DetectorType, such as
+// user-defined custom detectors, cannot share cache entries) and the
+// configuration that drives remote verification (so changing a verifier
+// endpoint or any other verification setting invalidates the cache). The
+// bytes must not contain secret material.
+type CacheKeyer interface {
+	CacheKey() ([]byte, error)
+}
+
 type Result struct {
 	// DetectorType is the type of Detector.
 	DetectorType detector_typepb.DetectorType

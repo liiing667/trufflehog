@@ -659,3 +659,27 @@ func TestTokenErrorCache_ConcurrentCallersDuringFailureMakeOneFetch(t *testing.T
 	}
 	assert.Equal(t, int32(1), base.calls.Load())
 }
+
+func TestConfig_Fingerprint(t *testing.T) {
+	// A nil config has no verifier semantics and fingerprints as nil.
+	var nilConfig *Config
+	assert.Nil(t, nilConfig.Fingerprint())
+
+	idp := newFakeIdP(t)
+	first := mustConfig(t, ropcAuth(idp.URL, ""))
+
+	// The same config reproduces the same bytes, so identical verifier setups
+	// keep sharing one cache entry.
+	assert.Equal(t, first.Fingerprint(), first.Fingerprint())
+
+	// A different token endpoint means verification requests are routed
+	// elsewhere and must produce a distinct fingerprint.
+	otherIdp := newFakeIdP(t)
+	otherEndpoint := mustConfig(t, ropcAuth(otherIdp.URL, ""))
+	assert.NotEqual(t, first.Fingerprint(), otherEndpoint.Fingerprint())
+
+	// A different token header changes how the token is attached and likewise
+	// distinguishes the configuration.
+	customHeader := mustConfig(t, ropcAuth(idp.URL, "X-Verifier-Token"))
+	assert.NotEqual(t, first.Fingerprint(), customHeader.Fingerprint())
+}

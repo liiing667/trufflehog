@@ -97,6 +97,30 @@ var (
 	_ detectors.ResultVerifier = (*testResultVerifier)(nil)
 )
 
+// configurableTestResultVerifier is a testResultVerifier that also carries the
+// two cache-identity dimensions a plain testDetector does not: a detector
+// version and a verifier configuration fingerprint. It lets tests prove that
+// switching either dimension invalidates cached verdicts, while identical
+// dimensions keep deduplicating the same credential.
+type configurableTestResultVerifier struct {
+	testResultVerifier
+	version          int
+	verifierConfigID []byte
+}
+
+func (t *configurableTestResultVerifier) Version() int { return t.version }
+
+func (t *configurableTestResultVerifier) VerifierConfigFingerprint() []byte {
+	return t.verifierConfigID
+}
+
+var (
+	_ detectors.Detector                    = (*configurableTestResultVerifier)(nil)
+	_ detectors.Versioner                   = (*configurableTestResultVerifier)(nil)
+	_ detectors.ResultVerifier              = (*configurableTestResultVerifier)(nil)
+	_ detectors.VerifierConfigFingerprinter = (*configurableTestResultVerifier)(nil)
+)
+
 // typedTestDetector reports a detector type chosen by the test rather than the fixed -1 of
 // testDetector, so tests can prove that verification timing is attributed to the detector that
 // incurred it and not merely recorded.
@@ -185,8 +209,8 @@ func assertSampleTypes(t *testing.T, recorder *detectorMetricsRecorder, want ...
 	assert.Equal(t, want, gotTypes)
 }
 
-func getResultCacheKey(t *testing.T, cache *VerificationCache, result detectors.Result) string {
-	key, err := cache.getResultCacheKey(result)
+func getResultCacheKey(t *testing.T, cache *VerificationCache, detector detectors.Detector, result detectors.Result) string {
+	key, err := cache.getResultCacheKey(detector, result)
 	require.NoError(t, err)
 	return string(key)
 }
@@ -285,8 +309,8 @@ func TestVerificationCache_FromData_VerifyTrueForceCacheUpdateFalseAllCacheHits(
 	cacheData[0].SetVerificationError(errors.New("test verification error"))
 	metrics := InMemoryMetrics{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, remoteResults[0]), cacheData[0])
-	cache.resultCache.Set(getResultCacheKey(t, cache, remoteResults[1]), cacheData[1])
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, remoteResults[0]), cacheData[0])
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, remoteResults[1]), cacheData[1])
 
 	results, err := cache.FromData(
 		logContext.Background(),
@@ -322,7 +346,7 @@ func TestVerificationCache_FromData_VerifyTrueForceCacheUpdateFalseCacheMiss(t *
 	resultCache := simple.NewCache[detectors.Result]()
 	metrics := InMemoryMetrics{}
 	cache := New(resultCache, &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]), cachedResult)
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]), cachedResult)
 
 	results, err := cache.FromData(
 		logContext.Background(),
@@ -355,8 +379,8 @@ func TestVerificationCache_FromData_VerifyTrueForceCacheUpdateTrue(t *testing.T)
 	detector.results[1].SetVerificationError(errors.New("test verification error"))
 	metrics := InMemoryMetrics{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]), detectors.Result{Redacted: "hello", Verified: false})
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[1]), detectors.Result{Redacted: "world", Verified: true})
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]), detectors.Result{Redacted: "hello", Verified: false})
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[1]), detectors.Result{Redacted: "world", Verified: true})
 
 	results, err := cache.FromData(
 		logContext.Background(),
@@ -433,7 +457,7 @@ func TestVerificationCache_FromData_ResultVerifier_PartialCacheHit(t *testing.T)
 	detector.results[1].SetVerificationError(errors.New("test verification error"))
 	metrics := InMemoryMetrics{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
 
 	results, err := cache.FromData(
@@ -481,8 +505,8 @@ func TestVerificationCache_FromData_ResultVerifier_AllCacheHits(t *testing.T) {
 		{Redacted: "world", Verified: false},
 	}
 	cacheData[1].SetVerificationError(errors.New("test verification error"))
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]), cacheData[0])
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[1]), cacheData[1])
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]), cacheData[0])
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[1]), cacheData[1])
 
 	results, err := cache.FromData(
 		logContext.Background(),
@@ -620,7 +644,7 @@ func TestVerificationCache_FromData_ResultVerifier_ForceCacheUpdate(t *testing.T
 	}}}
 	metrics := InMemoryMetrics{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: false})
 
 	results, err := cache.FromData(
@@ -712,7 +736,7 @@ func TestVerificationCache_FromData_PerDetectorTiming_CacheMiss(t *testing.T) {
 	}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, false, nil)
@@ -732,9 +756,9 @@ func TestVerificationCache_FromData_PerDetectorTiming_AllCacheHits(t *testing.T)
 	}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[1]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[1]),
 		detectors.Result{Redacted: "world", Verified: false})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, false, nil)
@@ -750,7 +774,7 @@ func TestVerificationCache_FromData_PerDetectorTiming_ForceCacheUpdate(t *testin
 	}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: false})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, true, nil)
@@ -767,7 +791,7 @@ func TestVerificationCache_FromData_PerDetectorTiming_ResultVerifierPartialCache
 	}}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, false, nil)
@@ -785,9 +809,9 @@ func TestVerificationCache_FromData_PerDetectorTiming_ResultVerifierAllCacheHits
 	}}}
 	metrics := detectorMetricsRecorder{}
 	cache := New(simple.NewCache[detectors.Result](), &metrics)
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[0]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[0]),
 		detectors.Result{Redacted: "hello", Verified: true})
-	cache.resultCache.Set(getResultCacheKey(t, cache, detector.results[1]),
+	cache.resultCache.Set(getResultCacheKey(t, cache, &detector, detector.results[1]),
 		detectors.Result{Redacted: "world", Verified: false})
 
 	_, err := cache.FromData(logContext.Background(), &detector, true, false, nil)
@@ -878,4 +902,163 @@ func TestVerificationCache_FromData_PerDetectorTiming_RecordsOnVerificationError
 
 	require.Error(t, err)
 	assertSampleTypes(t, &metrics, detector.Type())
+}
+
+// versionedVerifier builds a fake ResultVerifier whose declared version and
+// verifier configuration fingerprint are chosen by the test. Every instance
+// returns the exact same credential, so cache behavior can only be explained
+// by the identity dimensions under test rather than different raw material.
+func versionedVerifier(version int, verifierConfigID []byte, verified bool) *configurableTestResultVerifier {
+	return &configurableTestResultVerifier{
+		testResultVerifier: testResultVerifier{
+			testDetector: testDetector{results: []detectors.Result{
+				{Redacted: "hello", Raw: []byte("same-secret"), RawV2: []byte("same-secret-v2"), Verified: verified},
+			}},
+		},
+		version:          version,
+		verifierConfigID: verifierConfigID,
+	}
+}
+
+// A credential that failed verification under detector v1 must not be replayed
+// as a cached verdict once the detector is upgraded to v2: the cache identity
+// has to include the detector version so the upgrade forces re-verification.
+func TestVerificationCache_FromData_ResultVerifier_VersionSwitchForcesReverification(t *testing.T) {
+	resultCache := simple.NewCache[detectors.Result]()
+	cache := New(resultCache, nil)
+
+	v1 := versionedVerifier(1, nil, false)
+	results, err := cache.FromData(logContext.Background(), v1, true, false, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.False(t, results[0].Verified)
+	assert.Equal(t, 1, v1.verifyResultCallCount)
+
+	v2 := versionedVerifier(2, nil, true)
+	results, err = cache.FromData(logContext.Background(), v2, true, false, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	// The v2 detector must actually run rather than inherit v1's failed verdict.
+	assert.Equal(t, 1, v2.verifyResultCallCount)
+	assert.False(t, results[0].VerificationFromCache)
+	assert.True(t, results[0].Verified)
+
+	// The two versions occupy distinct cache entries.
+	assert.Len(t, resultCache.Values(), 2)
+
+	// A second v2 pass with the same credential and version is still deduplicated.
+	v2Again := versionedVerifier(2, nil, true)
+	results, err = cache.FromData(logContext.Background(), v2Again, true, false, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, 0, v2Again.verifyResultCallCount)
+	assert.True(t, results[0].VerificationFromCache)
+	assert.True(t, results[0].Verified)
+	assert.Len(t, resultCache.Values(), 2)
+
+	// And the v1 verdict remains independently cached, also without re-verification.
+	v1Again := versionedVerifier(1, nil, false)
+	results, err = cache.FromData(logContext.Background(), v1Again, true, false, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, 0, v1Again.verifyResultCallCount)
+	assert.True(t, results[0].VerificationFromCache)
+	assert.False(t, results[0].Verified)
+
+	// Cache entries never retain credential material regardless of version.
+	for _, cached := range resultCache.Values() {
+		assert.Nil(t, cached.Raw)
+		assert.Nil(t, cached.RawV2)
+	}
+}
+
+// Verifier configuration changes verification semantics just like a detector
+// upgrade does: routing the same credential at a different endpoint (or behind
+// different auth) must produce a cache miss and a fresh verification, while
+// identical configuration keeps sharing the cached verdict.
+func TestVerificationCache_FromData_ResultVerifier_VerifierConfigSwitchForcesReverification(t *testing.T) {
+	resultCache := simple.NewCache[detectors.Result]()
+	cache := New(resultCache, nil)
+
+	configA := []byte("verifier-endpoint-a")
+	configB := []byte("verifier-endpoint-b")
+
+	first := versionedVerifier(1, configA, true)
+	results, err := cache.FromData(logContext.Background(), first, true, false, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, 1, first.verifyResultCallCount)
+
+	// Same version and same credential, but a different verifier configuration.
+	reconfigured := versionedVerifier(1, configB, false)
+	results, err = cache.FromData(logContext.Background(), reconfigured, true, false, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, 1, reconfigured.verifyResultCallCount)
+	assert.False(t, results[0].VerificationFromCache)
+	assert.False(t, results[0].Verified)
+	assert.Len(t, resultCache.Values(), 2)
+
+	// Repeating either configuration is served from its own cache entry.
+	againA := versionedVerifier(1, configA, true)
+	results, err = cache.FromData(logContext.Background(), againA, true, false, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, 0, againA.verifyResultCallCount)
+	assert.True(t, results[0].VerificationFromCache)
+	assert.True(t, results[0].Verified)
+
+	againB := versionedVerifier(1, configB, false)
+	results, err = cache.FromData(logContext.Background(), againB, true, false, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, 0, againB.verifyResultCallCount)
+	assert.True(t, results[0].VerificationFromCache)
+	assert.False(t, results[0].Verified)
+
+	for _, cached := range resultCache.Values() {
+		assert.Nil(t, cached.Raw)
+		assert.Nil(t, cached.RawV2)
+	}
+}
+
+// The version and verifier configuration only participate in the hashed cache
+// key; the stored entity must remain a secret-free copy of the verification
+// verdict, including for a versioned, configured ResultVerifier.
+func TestVerificationCache_FromData_ResultVerifier_CachedEntryHasNoRawSecrets(t *testing.T) {
+	resultCache := simple.NewCache[detectors.Result]()
+	cache := New(resultCache, nil)
+
+	detector := &configurableTestResultVerifier{
+		testResultVerifier: testResultVerifier{
+			testDetector: testDetector{results: []detectors.Result{
+				{
+					Redacted:    "hello",
+					Raw:         []byte("same-secret"),
+					RawV2:       []byte("same-secret-v2"),
+					SecretParts: map[string]string{"key": "same-secret"},
+					Verified:    true,
+				},
+			}},
+		},
+		version:          2,
+		verifierConfigID: []byte("verifier-endpoint-a"),
+	}
+	detector.results[0].SetPrimarySecretValue("same-secret")
+
+	results, err := cache.FromData(logContext.Background(), detector, true, false, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	// The returned result keeps its secret material; only the cached copy is stripped.
+	assert.Equal(t, []byte("same-secret"), results[0].Raw)
+	assert.Equal(t, []byte("same-secret-v2"), results[0].RawV2)
+
+	cachedValues := resultCache.Values()
+	require.Len(t, cachedValues, 1)
+	cached := cachedValues[0]
+	assert.Nil(t, cached.Raw)
+	assert.Nil(t, cached.RawV2)
+	assert.Nil(t, cached.SecretParts)
+	assert.Empty(t, cached.GetPrimarySecretValue())
+	assert.True(t, cached.Verified)
 }

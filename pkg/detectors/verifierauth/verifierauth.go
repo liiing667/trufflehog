@@ -17,6 +17,7 @@
 package verifierauth
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/http"
@@ -119,6 +120,31 @@ func FromProto(auth *custom_detectorspb.VerifierAuth, unsafe bool) (*Config, err
 // configuration that would collide with the token at load time.
 func (c *Config) TokenHeader() string {
 	return c.tokenHeader
+}
+
+// Fingerprint returns a stable byte sequence identifying the verification
+// semantics of this config. It feeds the verification cache key, so two
+// configs that route verification requests differently must produce different
+// fingerprints while the same config reproduces the same bytes. The token
+// source, cached tokens, and trace ID are deliberately excluded: they vary
+// between runs without changing how a credential is verified.
+func (c *Config) Fingerprint() []byte {
+	if c == nil {
+		return nil
+	}
+	var b []byte
+	b = appendString(b, c.tokenEndpoint)
+	b = appendString(b, c.tokenHeader)
+	return b
+}
+
+// appendString appends a length-prefixed string so that distinct pairs of
+// values cannot collide on the same byte sequence.
+func appendString(b []byte, s string) []byte {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(s)))
+	b = append(b, length[:]...)
+	return append(b, s...)
 }
 
 // logger returns a logger tagged with this config's trace ID. It resolves

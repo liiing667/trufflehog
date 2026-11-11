@@ -84,6 +84,49 @@ func (f fakeDetectorV2) Version() int                       { return 2 }
 
 func (f fakeDetectorV2) Description() string { return "fake detector v2" }
 
+const versionedResultVerifierKeyword = "versionedresultverifier"
+
+// versionedResultVerifierDetector is a fake detector implementing both
+// Versioner and ResultVerifier. All versions extract the exact same raw
+// credential, so any sharing of verification verdicts across versions can only
+// come from the verification cache identity. The verdict each version returns
+// is configurable, which lets a test stage a v1 failure followed by a v2
+// success and assert the stale failure is never replayed after the upgrade.
+type versionedResultVerifierDetector struct {
+	version             int
+	verified            bool
+	verifyResultCounter *atomic.Int32
+}
+
+var (
+	_ detectors.Detector       = (*versionedResultVerifierDetector)(nil)
+	_ detectors.Versioner      = (*versionedResultVerifierDetector)(nil)
+	_ detectors.ResultVerifier = (*versionedResultVerifierDetector)(nil)
+)
+
+func (d *versionedResultVerifierDetector) FromData(_ aCtx.Context, _ bool, _ []byte) ([]detectors.Result, error) {
+	return []detectors.Result{{
+		DetectorType: detector_typepb.DetectorType(-1),
+		Raw:          []byte("same credential across versions"),
+	}}, nil
+}
+
+func (d *versionedResultVerifierDetector) VerifyResult(_ aCtx.Context, result *detectors.Result) {
+	d.verifyResultCounter.Add(1)
+	result.Verified = d.verified
+}
+
+func (d *versionedResultVerifierDetector) Keywords() []string {
+	return []string{versionedResultVerifierKeyword}
+}
+func (d *versionedResultVerifierDetector) Type() detector_typepb.DetectorType {
+	return detector_typepb.DetectorType(-1)
+}
+func (d *versionedResultVerifierDetector) Version() int { return d.version }
+func (d *versionedResultVerifierDetector) Description() string {
+	return "versioned result verifier for testing"
+}
+
 func TestFragmentLineOffset(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -2040,6 +2083,74 @@ func TestEngine_DetectChunk_CacheHitIsNotVerificationSkipped(t *testing.T) {
 	for _, result := range []detectors.ResultWithMetadata{first, second} {
 		assert.False(t, result.VerificationSkipped)
 		assert.True(t, result.Verified)
+	}
+}
+
+// TestEngine_DetectChunk_VersionSwitchBypassesStaleCachedVerdict validates the engine-level integration of the
+// version-aware verification cache. A credential that failed verification under detector v1 must be re-verified after
+// the detector is upgraded to v2, even though the raw credential and detector type are identical, and the cached
+// entities must never retain the raw secret.
+func TestEngine_DetectChunk_VersionSwitchBypassesStaleCachedVerdict(t *testing.T) {
+	ctx := context.Background()
+
+	resultCache := simple.NewCache[detectors.Result]()
+	e := &Engine{
+		results:           make(chan detectors.ResultWithMetadata, 4),
+		verificationCache: verificationcache.New(resultCache, &verificationcache.InMemoryMetrics{}),
+	}
+
+	var v1Verifications, v2Verifications atomic.Int32
+	v1 := &versionedResultVerifierDetector{version: 1, verified: false, verifyResultCounter: &v1Verifications}
+	v2 := &versionedResultVerifierDetector{version: 2, verified: true, verifyResultCounter: &v2Verifications}
+
+	v1Core := ahocorasick.NewAhoCorasickCore([]detectors.Detector{v1})
+	v2Core := ahocorasick.NewAhoCorasickCore([]detectors.Detector{v2})
+	v1Matches := v1Core.FindDetectorMatches([]byte(versionedResultVerifierKeyword))
+	v2Matches := v2Core.FindDetectorMatches([]byte(versionedResultVerifierKeyword))
+	require.Len(t, v1Matches, 1)
+	require.Len(t, v2Matches, 1)
+
+	detect := func(match *ahocorasick.DetectorMatch) detectors.ResultWithMetadata {
+		e.detectChunk(ctx, detectableChunk{
+			detector: match,
+			verify:   true,
+			wgDoneFn: func() {},
+		})
+		return <-e.results
+	}
+
+	// v1 verifies remotely and records a failed verdict.
+	firstV1 := detect(v1Matches[0])
+	assert.False(t, firstV1.VerificationFromCache)
+	assert.False(t, firstV1.Verified)
+	assert.Equal(t, int32(1), v1Verifications.Load())
+
+	// The repeated v1 pass is deduplicated: no remote verification, verdict replayed from the cache.
+	secondV1 := detect(v1Matches[0])
+	assert.True(t, secondV1.VerificationFromCache)
+	assert.False(t, secondV1.Verified)
+	assert.Equal(t, int32(1), v1Verifications.Load())
+
+	// Upgrading to v2 must invalidate the v1 entry and force a fresh verification.
+	firstV2 := detect(v2Matches[0])
+	assert.False(t, firstV2.VerificationFromCache)
+	assert.True(t, firstV2.Verified)
+	assert.Equal(t, int32(1), v2Verifications.Load())
+
+	// The v2 verdict is itself cached for repeated v2 passes.
+	secondV2 := detect(v2Matches[0])
+	assert.True(t, secondV2.VerificationFromCache)
+	assert.True(t, secondV2.Verified)
+	assert.Equal(t, int32(1), v2Verifications.Load())
+
+	// Both versions keep independent entries, and neither retains credential material.
+	cachedValues := resultCache.Values()
+	require.Len(t, cachedValues, 2)
+	for _, cached := range cachedValues {
+		assert.Nil(t, cached.Raw)
+		assert.Nil(t, cached.RawV2)
+		assert.Nil(t, cached.SecretParts)
+		assert.Empty(t, cached.GetPrimarySecretValue())
 	}
 }
 

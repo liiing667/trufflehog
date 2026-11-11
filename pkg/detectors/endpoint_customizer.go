@@ -1,12 +1,15 @@
 package detectors
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net/http"
 
 	"github.com/trufflesecurity/trufflehog/v3/pkg/common"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/verifierauth"
 )
+
+var _ VerifierConfigFingerprinter = (*EndpointSetter)(nil)
 
 // EndpointSetter implements a sensible default for the SetEndpoints function
 // of the EndpointCustomizer interface. A detector can embed this struct to
@@ -51,6 +54,42 @@ func (e *EndpointSetter) UseFoundEndpoints(enabled bool) {
 // endpoints. A nil config means no auth.
 func (e *EndpointSetter) SetVerifierAuth(cfg *verifierauth.Config) {
 	e.verifierAuth = cfg
+}
+
+// VerifierConfigFingerprint implements VerifierConfigFingerprinter. It
+// captures every EndpointSetter setting that can change which endpoint a
+// verification request reaches, or how it is authenticated, so the
+// verification cache re-verifies when any of them change. Found endpoints are
+// excluded: they are discovered per chunk rather than configured, and the
+// same configured verifier must keep sharing one cache entry across chunks.
+func (e *EndpointSetter) VerifierConfigFingerprint() []byte {
+	var b []byte
+	b = binary.BigEndian.AppendUint32(b, uint32(len(e.configuredEndpoints)))
+	for _, endpoint := range e.configuredEndpoints {
+		b = appendLengthPrefixed(b, endpoint)
+	}
+	b = appendLengthPrefixed(b, e.cloudEndpoint)
+	b = appendBool(b, e.useCloudEndpoint)
+	b = appendBool(b, e.useFoundEndpoints)
+	if e.verifierAuth != nil {
+		b = appendBool(b, true)
+		b = append(b, e.verifierAuth.Fingerprint()...)
+	} else {
+		b = appendBool(b, false)
+	}
+	return b
+}
+
+func appendLengthPrefixed(b []byte, s string) []byte {
+	b = binary.BigEndian.AppendUint32(b, uint32(len(s)))
+	return append(b, s...)
+}
+
+func appendBool(b []byte, value bool) []byte {
+	if value {
+		return append(b, 1)
+	}
+	return append(b, 0)
 }
 
 // Endpoints returns the endpoints a detector should verify against.

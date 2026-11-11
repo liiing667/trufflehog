@@ -202,3 +202,104 @@ func TestEndpointSetter_VerifierAuthFailuresSurviveSetVerificationError(t *testi
 
 	assert.Zero(t, hits.Load(), "neither failure sends the request")
 }
+
+func TestEndpointSetter_VerifierConfigFingerprint(t *testing.T) {
+	// An unconfigured setter has a stable, non-nil baseline fingerprint.
+	var baseline EndpointSetter
+	assert.NotNil(t, baseline.VerifierConfigFingerprint())
+	assert.Equal(t, baseline.VerifierConfigFingerprint(), baseline.VerifierConfigFingerprint())
+
+	// Every verification-affecting setting changes the fingerprint.
+	cases := []struct {
+		name  string
+		apply func(*EndpointSetter)
+	}{
+		{
+			name: "configured endpoints",
+			apply: func(s *EndpointSetter) {
+				require.NoError(t, s.SetConfiguredEndpoints("https://verify.example.com"))
+			},
+		},
+		{
+			name: "cloud endpoint",
+			apply: func(s *EndpointSetter) {
+				s.SetCloudEndpoint("https://cloud.example.com")
+			},
+		},
+		{
+			name: "use cloud endpoint flag",
+			apply: func(s *EndpointSetter) {
+				s.UseCloudEndpoint(true)
+			},
+		},
+		{
+			name: "use found endpoints flag",
+			apply: func(s *EndpointSetter) {
+				s.UseFoundEndpoints(true)
+			},
+		},
+		{
+			name: "verifier auth",
+			apply: func(s *EndpointSetter) {
+				require.NoError(t, s.SetConfiguredEndpoints("https://verify.example.com"))
+				s.SetVerifierAuth(newDeterministicVerifierAuth(t, "https://idp.example.com/token", ""))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var changed EndpointSetter
+			tc.apply(&changed)
+			assert.NotEqual(t, baseline.VerifierConfigFingerprint(), changed.VerifierConfigFingerprint())
+
+			// The fingerprint is deterministic for the same configuration.
+			var repeat EndpointSetter
+			tc.apply(&repeat)
+			assert.Equal(t, changed.VerifierConfigFingerprint(), repeat.VerifierConfigFingerprint())
+		})
+	}
+
+	// Found endpoints supplied at verification time are per-chunk data, not
+	// configuration, so they must not move the fingerprint.
+	var s EndpointSetter
+	require.NoError(t, s.SetConfiguredEndpoints("https://verify.example.com"))
+	s.UseFoundEndpoints(true)
+	before := s.VerifierConfigFingerprint()
+	_ = s.Endpoints("https://discovered.example.com")
+	assert.Equal(t, before, s.VerifierConfigFingerprint())
+}
+
+// Distinct verifier auth configs must be distinguishable by fingerprint even
+// when the configured endpoints are identical, since they authenticate
+// verification requests differently.
+func TestEndpointSetter_VerifierConfigFingerprint_DistinguishesAuth(t *testing.T) {
+	var first, second EndpointSetter
+	require.NoError(t, first.SetConfiguredEndpoints("https://verify.example.com"))
+	require.NoError(t, second.SetConfiguredEndpoints("https://verify.example.com"))
+
+	firstAuth := newDeterministicVerifierAuth(t, "https://idp.example.com/token", "")
+	secondAuth := newDeterministicVerifierAuth(t, "https://idp.example.com/token", "X-Verifier-Token")
+	first.SetVerifierAuth(firstAuth)
+	second.SetVerifierAuth(secondAuth)
+
+	assert.NotEqual(t, first.VerifierConfigFingerprint(), second.VerifierConfigFingerprint())
+}
+
+// newDeterministicVerifierAuth builds a verifier auth config without standing
+// up a server, so its fingerprint (which identifies the token endpoint and
+// header, not a live connection) is reproducible across calls.
+func newDeterministicVerifierAuth(t *testing.T, tokenEndpoint, tokenHeader string) *verifierauth.Config {
+	t.Helper()
+	cfg, err := verifierauth.FromProto(&custom_detectorspb.VerifierAuth{
+		AuthConfig: &custom_detectorspb.VerifierAuth_Oauth2{Oauth2: &custom_detectorspb.OAuth2Config{
+			TokenEndpoint: tokenEndpoint,
+			TokenHeader:   tokenHeader,
+			GrantConfig: &custom_detectorspb.OAuth2Config_Ropc{Ropc: &custom_detectorspb.ROPCConfig{
+				Username: "svc", Password: "pw", ClientId: "client",
+			}},
+		}},
+	}, true)
+	require.NoError(t, err)
+	return cfg
+}

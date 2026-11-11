@@ -104,12 +104,12 @@ func (v *VerificationCache) FromData(
 		// avoiding re-running verification for every result in the chunk.
 		// only if a detector implements detectors.ResultVerifier
 		if resultVerifier, ok := detector.(detectors.ResultVerifier); ok {
-			return v.verifyCacheMisses(ctx, resultVerifier, detector.Type(), withoutRemoteVerification)
+			return v.verifyCacheMisses(ctx, detector, resultVerifier, detector.Type(), withoutRemoteVerification)
 		}
 		isEverythingCached := true
 		var cacheHitsInCurrentChunk int
 		for i, r := range withoutRemoteVerification {
-			cacheKey, err := v.getResultCacheKey(r)
+			cacheKey, err := v.getResultCacheKey(detector, r)
 			if err != nil {
 				ctx.Logger().Error(err, "error getting result cache key for verification caching",
 					"operation", "read")
@@ -146,7 +146,7 @@ func (v *VerificationCache) FromData(
 	}
 
 	for _, r := range withRemoteVerification {
-		cacheKey, err := v.getResultCacheKey(r)
+		cacheKey, err := v.getResultCacheKey(detector, r)
 		if err != nil {
 			ctx.Logger().Error(err, "error getting result cache key for verification caching",
 				"operation", "write")
@@ -166,7 +166,8 @@ func (v *VerificationCache) FromData(
 // remotely verifies only the misses.
 func (v *VerificationCache) verifyCacheMisses(
 	ctx context.Context,
-	detector detectors.ResultVerifier,
+	detector detectors.Detector,
+	verifier detectors.ResultVerifier,
 	detectorType detector_typepb.DetectorType,
 	results []detectors.Result,
 ) ([]detectors.Result, error) {
@@ -181,14 +182,14 @@ func (v *VerificationCache) verifyCacheMisses(
 	}()
 	verifyResult := func(i int) {
 		verifyStart := time.Now()
-		detector.VerifyResult(ctx, &results[i])
+		verifier.VerifyResult(ctx, &results[i])
 		elapsed := time.Since(verifyStart)
 		v.recordDetectorVerifyTime(detectorType, elapsed)
 		timeSpentVerifying += elapsed
 	}
 
 	for i := range results {
-		cacheKey, err := v.getResultCacheKey(results[i])
+		cacheKey, err := v.getResultCacheKey(detector, results[i])
 		if err != nil {
 			ctx.Logger().Error(err, "error getting result cache key for verification caching",
 				"operation", "read")
@@ -215,7 +216,14 @@ func (v *VerificationCache) verifyCacheMisses(
 	return results, nil
 }
 
-func (v *VerificationCache) getResultCacheKey(result detectors.Result) ([]byte, error) {
+// getResultCacheKey builds the identity of a verification result. Beyond the
+// raw credential material and detector type, it includes the detector version
+// and any verifier configuration that can change verification semantics, so a
+// credential that failed verification under one detector version or verifier
+// setup is never served from an entry recorded under another. Only the hashed
+// key is retained; the cached result itself is stripped of secret material by
+// the callers before it is stored.
+func (v *VerificationCache) getResultCacheKey(detector detectors.Detector, result detectors.Result) ([]byte, error) {
 	v.hashMu.Lock()
 	defer v.hashMu.Unlock()
 
@@ -224,6 +232,23 @@ func (v *VerificationCache) getResultCacheKey(result detectors.Result) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
+	keyBytes, err = binary.Append(keyBytes, binary.BigEndian, int64(detectorVersion(detector)))
+	if err != nil {
+		return nil, err
+	}
+	if fingerprinter, ok := detector.(detectors.VerifierConfigFingerprinter); ok {
+		keyBytes = append(keyBytes, fingerprinter.VerifierConfigFingerprint()...)
+	}
 
 	return v.hasher.Hash(keyBytes)
+}
+
+// detectorVersion reports a detector's version when it implements Versioner,
+// and zero otherwise. Detectors without versions have no version dimension to
+// distinguish, so zero keeps their keys identical to the historical behavior.
+func detectorVersion(detector detectors.Detector) int {
+	if versioner, ok := detector.(detectors.Versioner); ok {
+		return versioner.Version()
+	}
+	return 0
 }

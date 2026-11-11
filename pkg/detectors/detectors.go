@@ -102,6 +102,21 @@ type VerifierAuthCustomizer interface {
 	SetVerifierAuth(*verifierauth.Config)
 }
 
+// VerifierConfigFingerprinter is an optional interface for detectors whose
+// verification semantics depend on configuration that lives outside the
+// detector result, such as configured verification endpoints or verifier
+// authentication. The verification cache folds the returned fingerprint into
+// a result's cache key so that results produced under different verifier
+// configurations are never treated as the same verification.
+//
+// Implementations must return a stable byte sequence that changes whenever any
+// verification-affecting configuration changes, and must never include raw
+// credential material: the fingerprint becomes part of a long-lived cache key.
+// A nil or empty fingerprint means no verifier configuration is in effect.
+type VerifierConfigFingerprinter interface {
+	VerifierConfigFingerprint() []byte
+}
+
 type CloudProvider interface {
 	CloudEndpoint() string
 }
